@@ -3,7 +3,6 @@
 import argparse
 import os
 import sys
-import yaml
 import json
 from collections import defaultdict
 from ebooklib import epub
@@ -31,18 +30,29 @@ def main(args):
     except Exception as err:
       fatal(1, f"Unexpected {err=}, {type(err)=}")
 
-    # first, quickly count the number of epubs
-    total = 0;
-    for root, _, files in os.walk(args.dir):
-      total += len(files)
-
     collection = None
-    if os.path.exists("tmp.json"):
-      with open("tmp.json") as infile:
-        collection = json.load(infile)
+
+    if args.raw is not None:
+      try:
+        with open(args.raw) as infile:
+          collection = json.load(infile)
+      except IOError as err:
+        fatal(1, f"\n{err}")
+        collection = None
+      except Exception as err:
+        fatal(1, f"\nUnexpected {err=}, {type(err)=}")
+        collection = None
+      if collection is None:
+        print("Failed to read raw collection, rebuilding from source collection")
 
     # construct an index to the valid english language books in the collection
     if collection is None:
+
+      # first, quickly count the number of epubs
+      total = 0;
+      for root, _, files in os.walk(args.dir):
+        total += len(files)
+
       collection = defaultdict(lambda: [])
       processed = 0
       for root, _, files in os.walk(args.dir):
@@ -72,8 +82,14 @@ def main(args):
               if args.verbose:
                 print(f"{progress:>3}% Adding {book.uid} to collection.")
 
-      with open("tmp.json", "w") as outfile:
-        json.dump(collection, outfile, indent=2, sort_keys=True)
+      if args.raw is not None:
+        try:
+          with open(args.raw, "w") as outfile:
+            json.dump(collection, outfile, indent=2, sort_keys=True)
+        except IOError as err:
+          fatal(1, f"{err}")
+        except Exception as err:
+          fatal(1, f"Unexpected {err=}, {type(err)=}")
 
     # sort books by epub version
     for book in collection.keys():
@@ -140,15 +156,13 @@ def main(args):
       else:
         print(f"Skipping colliding filename: {filename}")
 
-    print(f"Writing index to {args.index} ... ", end='')
     try:
       with open(args.index, "w") as outfile:
-        yaml.safe_dump(index, outfile, indent=2, width=65535, default_style='\'')
+        json.dump(index, outfile, indent=2, sort_keys=True)
     except IOError as err:
-      fatal(1, f"\n{err}")
+      fatal(1, f"{err}")
     except Exception as err:
-      fatal(1, f"\nUnexpected {err=}, {type(err)=}")
-    print(f"Done.")
+      fatal(1, f"Unexpected {err=}, {type(err)=}")
 
   elif args.op == 'link':
 
@@ -203,10 +217,18 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(prog='gb-util', description='Utility for manipulation of the Gutenberg collection of ebooks', epilog='')
   parser.add_argument('op', choices=['index', 'link' ], help='Operation to perform.')
   parser.add_argument('-i', '--index', required=True, help='Json formated index of the Gutenberg collection.')
+  parser.add_argument('--raw', nargs='?', default=None, help='Create/Read raw index results.')
   parser.add_argument('-v', '--verbose', action='store_true', help='Display verbose information while processing.')
   parser.add_argument('dir', help='Directory (index) containing the Gutenberg mirror | (link) to contain the library')
   args = parser.parse_args()
 
   if args.op == 'index' and not os.path.isdir(args.dir):
     raise argparse.ArgumentTypeError(f"{args.dir} is not a directory")
+
+  # sanitize json file names
+  if not args.index.endswith('.json'):
+    args.index += '.json'
+  if args.raw is not None and not args.raw.endswith('.json'):
+    args.raw += '.json'
+
   exit(main(args))
