@@ -11,9 +11,8 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            // "args": [ "gutenberg" ]
-            "args": [ "${userHome}/Downloads" ]
-            // "args": "${command:pickArgs}"
+            // "args": [ "index", "-v", "--index=${userHome}/tmp/gutenberg.yaml", "${userHome}/tmp/gutenberg-mirror" ]
+            "args": [ "link", "-v", "--index=${userHome}/tmp/gutenberg.yaml", "${userHome}/tmp/gutenberg-collection" ]
         }
     ]
 }

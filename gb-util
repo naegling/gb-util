@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import sys
+import yaml
+import json
+from collections import defaultdict
+from ebooklib import epub
+from slugify import slugify
+
+
+AUTHOR_TRANSFORM = { 'no author specified': 'Unkown' }
+
+def fatal(ret_code, str = None):
+  if str is not None:
+    print(f"{str}", file=sys.stderr)
+  exit(ret_code)
+
+
+def main(args):
+
+  if args.op == 'index':
+
+    # don't acutally write anything here, just ensuring we can
+    try:
+      with open(args.index, "w") as outfile:
+        outfile.write('')
+    except IOError as err:
+      fatal(1, f"{err}")
+    except Exception as err:
+      fatal(1, f"Unexpected {err=}, {type(err)=}")
+
+    # first, quickly count the number of epubs
+    total = 0;
+    for root, _, files in os.walk(args.dir):
+      total += len(files)
+
+    collection = None
+    if os.path.exists("tmp.json"):
+      with open("tmp.json") as infile:
+        collection = json.load(infile)
+
+    # construct an index to the valid english language books in the collection
+    if collection is None:
+      collection = defaultdict(lambda: [])
+      processed = 0
+      for root, _, files in os.walk(args.dir):
+        for file in files:
+          processed += 1
+          if file.endswith('.epub') and file != 'pg0.epub' and (os.path.sep + 'test') not in root:
+            fname = os.path.join(root, file)
+            try:
+              book = epub.read_epub(fname)
+            except Exception as err:
+              print(f"Error reading {fname}, skipping")
+              continue
+            if book.language == 'en' and len(book.title) > 0:
+              pub = {}
+              pub['version'] = book.version
+              pub['title'] = book.title
+              pub['fname'] = fname
+              authors = []
+              for author in book.get_metadata('DC', 'creator'):
+                if isinstance(author, tuple):
+                  author = str(author[0])
+                authors.append(author)
+              pub['authors'] = authors
+              collection[book.uid].append(pub)
+
+              progress = round(processed * 100 / total)
+              if args.verbose:
+                print(f"{progress:>3}% Adding {book.uid} to collection.")
+
+      with open("tmp.json", "w") as outfile:
+        json.dump(collection, outfile, indent=2, sort_keys=True)
+
+    # sort books by epub version
+    for book in collection.keys():
+      collection[book].sort(key=lambda pub: pub['version'], reverse=True)
+
+    # the goal is now to downselect to a single edition of the each book
+
+    # only keep the latest epub version
+    for book, editions in collection.items():
+      if len(editions) > 1:
+        ver = editions[0]['version']
+        collection[book] = [ edition for edition in editions if edition['version'] == ver ]
+
+    # prefer the images- version
+    for book, editions in collection.items():
+      if len(editions) > 1:
+        tmp = [ edition for edition in editions if '-images' in os.path.basename(edition['fname']) ]
+        if len(tmp) > 0:
+          collection[book] = tmp
+
+    # prefer non-kobo versions
+    for book, editions in collection.items():
+      if len(editions) > 1:
+        tmp = [ edition for edition in editions if '.kepub' not in os.path.basename(edition['fname']) ]
+        if len(tmp) > 0:
+          collection[book] = tmp
+
+    # should be down to a single edition now
+    # error, if we still have mutiple editions (or none) of any book
+    for book, editions in collection.items():
+      if len(editions) == 0:
+        print(f"No Choices for {book}")
+        return 1
+      if len(editions) > 1:
+        print(f"Multiple Choices for {book}")
+        return 1
+
+    # down to unique edition, lose the list
+    for book in collection.keys():
+      collection[book] = collection[book][0]
+
+    # every book must have at least one author
+    for book, details in collection.items():
+      if len(details['authors']) == 0:
+        details['authors'].append("Unknown")
+      else:
+        # check list of authors for transformations
+        for idx, author in enumerate(details['authors']):
+          if author.lower() in AUTHOR_TRANSFORM:
+            details['authors'][idx] = AUTHOR_TRANSFORM[author.lower()]
+
+    # finally, organize books by first author
+    index = {}
+    for book, details in collection.items():
+
+      # file by first author from list
+      author = slugify(details['authors'][0], lowercase=False, separator='_')
+
+      if author not in index:
+        index[author] = {}
+      filename = os.path.basename(details['fname'])
+      if filename not in index[author]:
+        index[author][filename] = details
+      else:
+        print(f"Skipping colliding filename: {filename}")
+
+    print(f"Writing index to {args.index} ... ", end='')
+    try:
+      with open(args.index, "w") as outfile:
+        yaml.safe_dump(index, outfile, indent=2, width=65535, default_style='\'')
+    except IOError as err:
+      fatal(1, f"\n{err}")
+    except Exception as err:
+      fatal(1, f"\nUnexpected {err=}, {type(err)=}")
+    print(f"Done.")
+
+  elif args.op == 'link':
+
+    os.makedirs(args.dir, exist_ok=True)
+
+    # retrieve the collection index
+    collection = None
+    print(f"Reading index from {args.index} ... ", end='')
+    try:
+      with open(args.index) as infile:
+        collection = yaml.safe_load(infile)
+    except IOError as err:
+      fatal(1, f"\n{err}")
+    except Exception as err:
+      fatal(1, f"\nUnexpected {err=}, {type(err)=}")
+    print(f"Done.")
+
+    for author, books in collection.items():
+      target_dir = os.path.join(args.dir, author)
+      if os.path.isdir(target_dir):
+        # target_dir already exists, unlink any files that shouldn't be there
+        target_files = set()
+        for book in books.keys():
+          target_files.add(book)
+        for root, _, files in os.walk(target_dir):
+          for file in files:
+            if file not in target_files:
+              target_file = os.path.join(root, file)
+              if args.verbose:
+                print(f"Unlinking book at {target_file}")
+              os.unlink(target_file)
+      else:
+        if args.verbose:
+          print(f"Creating directory at {target_dir}")
+        os.makedirs(target_dir)
+      for book, details in books.items():
+        target_file = os.path.join(target_dir, os.path.basename(details['fname']))
+        if not os.path.exists(target_file):
+          if args.verbose:
+            print(f"Linking book at {target_file}")
+          os.link(details['fname'], target_file)
+
+  else:
+    print("Toto, I don't think we're in Kansas anymore", file=sys.stderr)
+    return 1
+
+  return 0
+
+
+if __name__ == "__main__":
+
+  parser = argparse.ArgumentParser(prog='gb-util', description='Utility for manipulation of the Gutenberg collection of ebooks', epilog='')
+  parser.add_argument('op', choices=['index', 'link' ], help='Operation to perform.')
+  parser.add_argument('-i', '--index', required=True, help='Json formated index of the Gutenberg collection.')
+  parser.add_argument('-v', '--verbose', action='store_true', help='Display verbose information while processing.')
+  parser.add_argument('dir', help='Directory (index) containing the Gutenberg mirror | (link) to contain the library')
+  args = parser.parse_args()
+
+  if args.op == 'index' and not os.path.isdir(args.dir):
+    raise argparse.ArgumentTypeError(f"{args.dir} is not a directory")
+  exit(main(args))

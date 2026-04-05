@@ -1,9 +1,11 @@
 [project]
-name = "select-epub"
+name = "gb-util"
 version = "0.1.0"
-description = "Add your description here"
+description = "Utility for manipulation of the Gutenberg collection of ebooks"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "ebooklib>=0.20",
+    "python-slugify>=8.0.4",
+    "pyyaml>=6.0.3",
 ]
